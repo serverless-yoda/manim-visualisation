@@ -1,0 +1,18 @@
+[project]
+name = "manim-visual"
+version = "0.1.0"
+description = "Rag In Practice"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "manim",
+    "wbgapi",
+    "pandas",
+    "moviepy",
+    "requests"
+]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+[tool.setuptools]
+py-modules = [] 
