@@ -56,9 +56,9 @@ next-env.d.ts
 
 # exclude temporary python files
 **/temp*.py
-app/data/*.csv
-app/working_version/*.py
+app/data/
+app/working_version/
 maning_visual.egg-info/
-app/final_upload/*.mp4
-app/media/**/1080p60/*.mp4
+app/final_upload/
+app/media/
 .venv/
