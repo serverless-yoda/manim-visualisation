@@ -3,11 +3,12 @@ import pandas as pd
 import numpy as np
 import os
 import random
-
+from PIL import ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 class UltimateUniversalRace(MovingCameraScene):
     # SETTINGS
-    DATA_PATH = "data/data.csv"
-    TITLE = "Defense Spending $B by Country" # Change this to match your CSV row
+    DATA_PATH = "datasets/battle_tanks.csv"
+    TITLE = "Battle Tank Production by Country (1916-2020)"
     IMAGE_DIR = "images"
     WATERMARK_TEXT = "@YourChannelName"
     
