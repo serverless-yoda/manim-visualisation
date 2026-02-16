@@ -1,202 +1,170 @@
-#!/usr/bin/env python3
-"""
-Ollama Docker CSV Generator for Manim Bar Chart Race
-Generates EXACT columns: Year, USA, CHN, RUS, JPN, DEU, IND, GBR, FRA, BRA, ITA, CAN, AUS, KOR, ISR, SAU, NZD, Milestone
-"""
-
 import requests
 import pandas as pd
-import json
-import time
 import os
+import time
 from pathlib import Path
 
 # === CONFIG ===
 OLLAMA_URL = "http://localhost:11434/api/generate"
-MODEL = "llama3.2"  # or "qwen2.5" or "gemma2"
-OUTPUT_PATH = "data/data.csv"
+MODEL = "qwen2.5:3b"
+OUTPUT_DIR = "datasets"
+Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
 
-def wait_for_ollama(timeout=60):
-    """Wait for Ollama Docker container to be ready"""
-    print("⏳ Waiting for Ollama...")
-    start = time.time()
-    while time.time() - start < timeout:
-        try:
-            response = requests.post(OLLAMA_URL, json={"model": MODEL, "prompt": "ping", "stream": False}, timeout=5)
-            if response.status_code == 200:
-                print("✅ Ollama ready!")
-                return True
-        except:
-            time.sleep(2)
-    print("❌ Ollama not ready after 60s")
-    return False
+# Starting numbers for 1916 to prevent the "Baseline" text error
+STARTING_VALUES = {
+    "USA": 55.0, "RUS": 45.0, "CHN": 12.0, "IND": 8.0, 
+    "EGY": 2.0, "KOR": 1.5, "UKR": 3.0, "POL": 4.5, 
+    "PAK": 2.5, "SYR": 1.0, "VNM": 1.0, "PRK": 0.5, 
+    "ISR": 0.2, "TUR": 3.5
+}
 
-def generate_csv_data(title, start_year=1900, end_year=2026):
-    """Generate generic CSV dataset for 100+ viral topics with EXACT required columns"""
-    
-    countries = ['USA', 'CHN', 'RUS', 'JPN', 'DEU', 'IND', 'GBR', 'FRA', 'BRA', 'ITA', 'CAN', 'AUS', 'KOR', 'ISR', 'SAU', 'NZD']
-    columns_list = ['Year'] + countries + ['Milestone']
-    
-    # SMART RULES based on dataset type
-    rules = {
-        "military": "Values in Billions USD. USA leads, China surges post-2000, Russia peaks 1980s",
-        "gdp": "Values in Trillions USD (PPP). USA starts dominant, China catches up post-1990", 
-        "economy": "Values in Billions USD. Steady growth with crisis dips (2008, 2020)",
-        "tech": "Values in Millions of units or Gbps. Exponential growth post-2000",
-        "internet": "Values in Mbps or Millions users. Asia leads growth post-2010",
-        "society": "Values as percentages or per 100k. Steady improvement trends",
-        "health": "Values as per 100k or years. Developed nations lead",
-        "environment": "Values in Millions tons or %. Sharp changes post-1990",
-        "sports": "Values as counts or Millions USD. USA dominates most",
-        "weird": "Values as counts or per 100k. Spikes around cultural events"
-    }
-    
-    # Detect category from title
-    category = "economy"
-    title_lower = title.lower()
-    for key in rules:
-        if key in title_lower:
-            category = key
-            break
-    
-    prompt = f"""Generate REALISTIC TIME SERIES CSV for "{title}" ({start_year}-{end_year}) with EXACT columns:
+def format_human_readable(n):
+    """Converts strings/floats to clean numeric strings or K/M format."""
+    try:
+        # Clean the string of any placeholder text the AI might have hallucinated
+        clean_n = "".join(c for c in str(n) if c.isdigit() or c in '.-')
+        val = float(clean_n)
+        if val >= 1_000_000: return f"{val/1_000_000:.2f}M"
+        if val >= 1_000: return f"{val/1_000:.2f}K"
+        return str(round(val, 2))
+    except:
+        return "0.0" # Default if AI still sends "Baseline+%"
 
-{','.join(columns_list)}
+def get_era_context(year):
+    if year < 1939: return "Pre-WWII volatility. Military spending is moderate."
+    if year < 1946: return "WWII Total War. Spending should spike 10-20% annually."
+    if year < 1991: return "Cold War Tensions. Steady annual growth of 3-5%."
+    return "Modern multipolar era. Diverse spending trends."
 
-🚨 CRITICAL: YEARLY INCREMENTAL DATA REQUIRED
-- Year column: STRICTLY INCREMENTS BY 1 (1900, 1901, 1902, ..., 2026)
-- One row PER YEAR, NO gaps, NO duplicates
-- Years must be sequential: Year(n+1) = Year(n) + 1
-
-RULES BY CATEGORY ({category}):
-{rules[category]}
-
-GENERAL RULES:
-1. Years: {start_year}-{end_year} (annual, exactly {end_year-start_year+1} rows)
-2. Leader (USA) starts 3-10x others
-3. China: Rapid growth post-1990 (2x-5x annual acceleration)
-4. Russia: Peak mid-period, 1990s collapse, 2020s recovery
-5. Japan/Germany: Steady 2nd tier performers
-6. India/Brazil: Late surge post-2000
-7. Milestones: 8 key events matching {title} history
-
-📈 GROWTH PATTERNS (YEARLY INCREMENTS):
-- Realistic growth: 2-8% yearly increase
-- Crises cause 10-30% drops in specific years
-- Tech/emerging markets explode post-2000
-- Values generally TREND UPWARD over time
-
-Return ONLY valid CSV (no markdown, no explanation):
-{','.join(columns_list)}
-1900,4.2,0.8,1.5,0.9,1.2,0.3,0.8,0.6,0.2,0.4,0.5,0.3,0.1,0.05,0.2,0.02,"Early Competition"
-1901,4.3,0.9,1.6,0.95,1.25,0.32,0.82,0.62,0.22,0.42,0.52,0.32,0.11,0.06,0.22,0.03,"Incremental Growth"
-... (continue with YEARLY increments until 2026)
-"""
-
-    payload = {
-        "model": MODEL,
-        "prompt": prompt,
-        "stream": False,
-        "options": {
-            "temperature": 0.1,  # Ultra-low for perfect yearly sequence
-            "num_predict": 6000
-        }
-    }
+def generate_chunk_with_retry(title, start_year, end_year, countries, last_row_seed=None):
+    target_years = list(range(start_year, end_year + 1))
+    columns = ['Year'] + countries + ['Milestone', 'Primary_Source']
     
-    print(f"🤖 Generating '{title}' dataset (yearly increments)...")
-    response = requests.post(OLLAMA_URL, json=payload, timeout=180)
-    
-    if response.status_code != 200:
-        print(f"❌ Ollama error: {response.status_code}")
-        return None
-    
-    result = response.json()["response"]
-    
-    # Extract clean CSV with validation
-    csv_lines = []
-    lines = result.split('\n')
-    for line in lines:
-        line = line.strip()
-        if (line and ',' in line and len(line.split(',')) >= 18 and 
-            not line.startswith(('```', '#', 'Note'))):
-            csv_lines.append(line)
-    
-    csv_content = '\n'.join(csv_lines[:80])
-    
-    return csv_content
+    # If no seed, use our hardcoded STARTING_VALUES
+    if not last_row_seed:
+        last_row_seed = f"1915," + ",".join([str(STARTING_VALUES.get(c, 1.0)) for c in countries])
 
-def validate_csv(csv_content):
-    """Validate CSV has exact columns"""
-    lines = csv_content.strip().split('\n')
-    if len(lines) < 2:
-        return False
+    for attempt in range(3):
+        print(f"      🔄 Attempt {attempt + 1} for {start_year}-{end_year}...")
         
-    header = lines[0].strip().split(',')
-    required_cols = ['Year', 'USA', 'CHN', 'RUS', 'JPN', 'DEU', 'IND', 'GBR', 'FRA', 'BRA', 'ITA', 'CAN', 'AUS', 'KOR', 'ISR', 'SAU', 'NZD', 'Milestone']
-    
-    # Check exact columns
-    if [col.strip() for col in header] != required_cols:
-        print("❌ Wrong columns:", [col.strip() for col in header])
-        return False
-    
-    # Check reasonable data range
-    for line in lines[1:]:
-        values = line.split(',')
-        try:
-            year = int(values[0])
-            usa = float(values[1])
-            if not (1960 <= year <= 2026 and 100 <= usa <= 1000):
-                return False
-        except:
-            return False
-    
-    return True
+        system_prompt = (
+            "You are a numeric data engine. Output ONLY raw CSV rows. "
+            "NEVER use the word 'Baseline'. Use ONLY digits and decimals for values. "
+            "No headers. No markdown."
+        )
+        
+        user_prompt = (
+            f"Task: CSV for {title}\n"
+            f"Years: {', '.join(map(str, target_years))}\n"
+            f"Columns: {','.join(columns)}\n"
+            f"Context: {get_era_context(start_year)}\n"
+            f"Seed Data (Previous Year): {last_row_seed}\n"
+            "Constraint: Every country column MUST be a float (e.g. 72.45). Do NOT write text formulas."
+        )
 
-def save_csv(csv_content):
-    """Save validated CSV"""
-    Path("data").mkdir(exist_ok=True)
+        payload = {
+            "model": MODEL,
+            "system": system_prompt,
+            "prompt": user_prompt,
+            "stream": False,
+            "options": {"temperature": 0.3, "num_predict": 1000, "stop": ["Task:", "```"]}
+        }
+
+        try:
+            response = requests.post(OLLAMA_URL, json=payload).json().get("response", "").strip()
+            parsed_rows = []
+            found_years = []
+            
+            for line in response.split('\n'):
+                parts = [p.strip().strip('"') for p in line.split(',')]
+                if len(parts) >= len(columns) and parts[0].isdigit():
+                    yr = int(parts[0])
+                    # Verify this row is actually numeric data, not "Baseline+2%"
+                    if yr in target_years and yr not in found_years:
+                        # Safety check: is the second column a number?
+                        if any(char.isdigit() for char in parts[1]):
+                            parsed_rows.append(parts)
+                            found_years.append(yr)
+            
+            if len(found_years) == len(target_years):
+                parsed_rows.sort(key=lambda x: int(x[0]))
+                return parsed_rows
+        except:
+            continue
+            
+    return []
+
+def generate_full_dataset(title, start, end, countries):
+    header = ['Year'] + countries + ['Milestone', 'Primary_Source']
+    final_lines = [','.join(header)]
+    last_line_str = None
+
+    for s in range(start, end + 1, 5):
+        e = min(s + 4, end)
+        print(f"   📊 Processing {s}-{e}...")
+        
+        chunk = generate_chunk_with_retry(title, s, e, countries, last_row_seed=last_line_str)
+        
+        if not chunk:
+            print(f"      🔴 Gap detected at {s}. AI failed to provide numeric data.")
+            continue
+
+        for row in chunk:
+            formatted = [row[0]] # Year
+            for i in range(1, len(countries) + 1):
+                formatted.append(format_human_readable(row[i]))
+            formatted.extend(row[len(countries)+1:]) # Milestone/Source
+            
+            line = ','.join(formatted)
+            final_lines.append(line)
+            last_line_str = line
+
+    return '\n'.join(final_lines)
+
+def repair_and_interpolate_csv(filename):
+    """Fills any missing years and interpolates the data for a smooth video."""
+    df = pd.read_csv(filename)
     
-    with open(OUTPUT_PATH, 'w') as f:
-        f.write(csv_content)
+    # 1. Ensure Year is the index and numeric
+    df['Year'] = pd.to_numeric(df['Year'])
+    df = df.set_index('Year')
     
-    df = pd.read_csv(OUTPUT_PATH)
-    print(f"✅ CSV saved: {OUTPUT_PATH}")
-    print(f"📊 Shape: {df.shape}")
-    print(f"📈 Years: {df['Year'].min()} to {df['Year'].max()}")
-    print(f"💰 USA range: ${df['USA'].min():.1f}B to ${df['USA'].max():.1f}B")
-    print("\nFirst 3 rows:")
-    print(df.head(3).to_string(index=False))
+    # 2. Create a full range of years from start to end
+    full_range = range(df.index.min(), df.index.max() + 1)
+    df = df.reindex(full_range)
+    
+    # 3. Interpolate numeric columns (Countries)
+    # This fills gaps like [10, NaN, NaN, 40] with [10, 20, 30, 40]
+    numeric_cols = df.select_dtypes(include=['number']).columns
+    df[numeric_cols] = df[numeric_cols].interpolate(method='linear')
+    
+    # 4. Forward fill text columns (Milestones/Sources)
+    df = df.ffill()
+    
+    # Save it back
+    df.to_csv(filename)
+    print(f"✨ CSV Repaired: {filename}")
+
 
 def main():
-    print("🚀 Ollama Docker CSV Generator")
-    print("=" * 50)
+    if not os.path.exists("data/1_geopolitics.csv"): return
+    master_df = pd.read_csv("data/1_geopolitics.csv")
     
-    # 1. Check Ollama
-    if not wait_for_ollama():
-        print("💡 Start Ollama Docker:")
-        print("docker run -d -v ollama:/root/.ollama -p 11434:11434 --name ollama ollama/ollama")
-        print("docker exec -it ollama ollama pull llama3.2")
-        return
-    
-    # 2. Pull model if needed
-    try:
-        requests.post(OLLAMA_URL, json={"model": MODEL, "prompt": "test", "stream": False}, timeout=10)
-    except:
-        print(f"📥 Pulling {MODEL}...")
-        os.system(f"docker exec ollama ollama pull {MODEL}")
-        time.sleep(5)
-    
-    # 3. Generate CSV
-    csv_content = generate_csv_data('Nuclear Warhead Stockpiles (Cold War–Present)')
-    if not csv_content or not validate_csv(csv_content):
-        print("❌ Invalid CSV generated. Try different model.")
-        return
-    
-    # 4. Save
-    save_csv(csv_content)
-    
-    print("\n🎬 Ready for Manim!")
-    print(f"uv run manim -pqh ultimate.py UltimateUniversalRace")
+    for _, task in master_df.iterrows():
+        title = task['title']
+        filename = f"{OUTPUT_DIR}/{title.replace(' ', '_').lower()}.csv"
+        if os.path.exists(filename): continue
 
+        print(f"\n🎯 GENERATING: {title}")
+        data = generate_full_dataset(title, int(task['start']), int(task['end']), str(task['countries']).split())
+        
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(data)
+
+        repair_and_interpolate_csv(filename)
+
+
+# Usage:
+# repair_and_interpolate_csv("datasets/world_military_spending.csv")
 if __name__ == "__main__":
     main()

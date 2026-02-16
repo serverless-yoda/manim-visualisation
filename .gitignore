@@ -61,4 +61,5 @@ app/working_version/
 maning_visual.egg-info/
 app/final_upload/
 app/media/
+app/datasets/
 .venv/
